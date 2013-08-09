@@ -77,6 +77,8 @@ namespace po = boost::program_options;
 #   endif
 #endif
 
+extern "C" void avbot_setup_seghandler();
+
 char * execpath;
 avlog logfile;			// 用于记录日志文件.
 
@@ -101,22 +103,18 @@ static void vc_code_decoded(boost::system::error_code ec, std::string provider, 
 	need_vc = false;
 }
 
-static void on_verify_code(const boost::asio::const_buffer & imgbuf, avbot & mybot, decaptcha::deCAPTCHA & decaptcha)
+static void on_verify_code(std::string imgbuf, avbot & mybot, decaptcha::deCAPTCHA & decaptcha)
 {
-	const char * data = boost::asio::buffer_cast<const char*>( imgbuf );
-	size_t	imgsize = boost::asio::buffer_size( imgbuf );
-	std::string buffer(data, imgsize);
-
 	BOOST_LOG_TRIVIAL(info) << "got vercode from TX, now try to auto resovle it ... ...";
 
 	need_vc = true;
 	// 保存文件.
 	std::ofstream	img("vercode.jpeg", std::ofstream::openmode(std::ofstream::binary | std::ofstream::out) );
-	img.write(data, imgsize);
+	img.write(&imgbuf[0], imgbuf.length());
 	img.close();
 
 	decaptcha.async_decaptcha(
-		buffer,
+		imgbuf,
 		boost::bind(&vc_code_decoded, _1, _2, _3, _4, boost::ref(mybot))
 	);
 }
@@ -259,7 +257,7 @@ static void avbot_log( avbot::av_message_tree message, avbot & mybot )
 
 static void avbot_rpc_server(boost::shared_ptr<boost::asio::ip::tcp::socket> m_socket, avbot & mybot)
 {
-	::detail::avbot_rpc_server(m_socket, mybot.on_message);
+	boost::make_shared< detail::avbot_rpc_server>(m_socket, boost::ref(mybot.on_message))->start();
 }
 
 static void my_on_bot_command(avbot::av_message_tree message, avbot & mybot)
@@ -325,7 +323,7 @@ int daemon( int nochdir, int noclose )
 int main( int argc, char *argv[] )
 {
 	std::string qqnumber, qqpwd;
-	std::string ircnick, ircroom, ircpwd;
+	std::string ircnick, ircroom, ircpwd, ircserver;
 	std::string xmppuser, xmppserver, xmpppwd, xmpproom, xmppnick;
 	std::string cfgfile;
 	std::string logdir;
@@ -367,6 +365,9 @@ int main( int argc, char *argv[] )
 	( "ircnick",	po::value<std::string>( &ircnick ), 	"irc nick" )
 	( "ircpwd",		po::value<std::string>( &ircpwd ), 		"irc password" )
 	( "ircrooms",	po::value<std::string>( &ircroom ), 	"irc room" )
+	( "ircserver",	po::value<std::string>
+		( &ircserver)->default_value("irc.freenode.net:6667"), "irc server, default to freenode" )
+
 	( "xmppuser",	po::value<std::string>( &xmppuser ), 	"id for XMPP,  eg: (microcaicai@gmail.com)" )
 	( "xmppserver",	po::value<std::string>( &xmppserver ), 	 "server to connect for XMPP,  eg: (xmpp.l.google.com)" )
 	( "xmpppwd",	po::value<std::string>( &xmpppwd ), 	"password for XMPP" )
@@ -458,9 +459,12 @@ int main( int argc, char *argv[] )
 			fs::create_directory( logdir );
 	}
 
-	// 设置到中国的时区，否则 qq 消息时间不对啊.
 #ifndef _WIN32
+	// 设置到中国的时区，否则 qq 消息时间不对啊.
 	setenv("TZ", "Asia/Shanghai", 1);
+
+	// 设置 BackTrace
+	avbot_setup_seghandler();
 # endif
 
 #ifdef _WIN32
@@ -561,7 +565,7 @@ rungui:
 	mybot.set_qq_account( qqnumber, qqpwd, boost::bind( on_verify_code, _1, boost::ref( mybot ), boost::ref(decaptcha) ) );
 
 	if( !ircnick.empty() )
-		mybot.set_irc_account( ircnick, ircpwd );
+		mybot.set_irc_account( ircnick, ircpwd, ircserver);
 
 	if( !xmppuser.empty() )
 		mybot.set_xmpp_account( xmppuser, xmpppwd, xmppserver, xmppnick );

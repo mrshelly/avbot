@@ -29,6 +29,10 @@ namespace pt = boost::property_tree;
 #include <boost/property_tree/json_parser.hpp>
 namespace js = boost::property_tree::json_parser;
 #include <boost/circular_buffer.hpp>
+#include <boost/enable_shared_from_this.hpp>
+#include <boost/async_coro_queue.hpp>
+
+#include "avhttpd.hpp"
 
 #include "botctl.hpp"
 
@@ -40,73 +44,58 @@ namespace detail
 // avbot_rpc_server 由 acceptor_server 这个辅助类调用
 // 为其构造函数传入一个 m_socket, 是 shared_ptr 的.
 class avbot_rpc_server
+	: boost::asio::coroutine
+	, public boost::enable_shared_from_this<avbot_rpc_server>
 {
-	enum http_request
-	{
-		HTTP_GET = 1,
-		HTTP_POST = 1,
-	};
 public:
 	typedef boost::signals2::signal <
 	void( boost::property_tree::ptree )
 	> on_message_signal_type;
-	on_message_signal_type & on_message;
+
+	on_message_signal_type &broadcast_message;
 
 	typedef boost::asio::ip::tcp Protocol;
 	typedef boost::asio::basic_stream_socket<Protocol> socket_type;
-	typedef void result_type;
 
-	avbot_rpc_server( boost::shared_ptr<socket_type> _socket, on_message_signal_type & _on_message )
+	avbot_rpc_server( boost::shared_ptr<socket_type> _socket, on_message_signal_type & on_message )
 		: m_socket( _socket )
-		, m_request( new boost::asio::streambuf )
-		, m_responses( new boost::circular_buffer_space_optimized<boost::shared_ptr<boost::asio::streambuf> >( 20 ) )
-		, on_message( _on_message )
+		, m_streambuf( new boost::asio::streambuf )
+		, m_responses(boost::ref(_socket->get_io_service()), 20)
+		, broadcast_message(on_message)
 	{
-		m_socket->get_io_service().post(
-			boost::asio::detail::bind_handler( *this, boost::asio::coroutine(), boost::system::error_code(), 0 )
+	}
+
+	void start()
+	{
+		avloop_idle_post(m_socket->get_io_service(),
+			boost::bind<void>(&avbot_rpc_server::client_loop, shared_from_this(),
+					boost::system::error_code(), 0 )
 		);
+		m_connect = broadcast_message.connect(boost::bind<void>(&avbot_rpc_server::callback_message, this, _1));
 	}
 
-	// 数据操作跑这里，嘻嘻.
-	void operator()( boost::asio::coroutine coro, boost::system::error_code ec, std::size_t bytestransfered );
+	void get_response_sended(boost::shared_ptr< boost::asio::streambuf > v, boost::system::error_code ec, std::size_t);
+	void on_pop(boost::shared_ptr<boost::asio::streambuf> v);
 
-	// signal 的回调到了这里, 这里我们要区分对方是不是用了 keep-alive 呢.
-	void operator()( boost::asio::coroutine coro, const boost::property_tree::ptree & jsonmessage )
-	{
-		boost::shared_ptr<boost::asio::streambuf> buf( new boost::asio::streambuf );
-		std::ostream	stream( buf.get() );
-		std::stringstream	teststream;
+	// 循环处理客户端连接.
+	void client_loop(boost::system::error_code ec, std::size_t bytestransfered);
 
-		js::write_json( teststream,  jsonmessage );
-
-		// 直接写入 json 格式的消息吧!
-		stream <<  "HTTP/1.1 200 OK\r\n" <<  "Content-type: application/json\r\n";
-		stream <<  "connection: keep-alive\r\n" <<  "Content-length: ";
-		stream << teststream.str().length() <<  "\r\n\r\n";
-
-		js::write_json( stream, jsonmessage );
-
-		// 检查 发送缓冲区.
-		if( m_responses->empty() )
-		{
-			// 打通仁督脉.
-			m_socket->get_io_service().post( boost::asio::detail::bind_handler( *this, coro, boost::system::error_code(), 0 ) );
-		}
-
-		// 写入 m_responses
-		m_responses->push_back( buf );
-	}
+	// signal 的回调到这里
+	void callback_message(const boost::property_tree::ptree & jsonmessage );
 private:
 	boost::shared_ptr<socket_type> m_socket;
-	boost::shared_ptr<boost::signals2::connection> m_connect;
 
-	boost::shared_ptr<boost::asio::streambuf>	m_request;
-	boost::int64_t								m_request_content_length;
-	std::string									m_request_content_type;
+	boost::signals2::scoped_connection m_connect;
 
-	boost::shared_ptr< boost::circular_buffer_space_optimized<boost::shared_ptr<boost::asio::streambuf> > >	m_responses;
+	boost::shared_ptr<boost::asio::streambuf> m_streambuf;
+	avhttpd::request_opts m_request;
 
-	http_request parse_http( std::size_t );
-	void process_post( std::size_t bytestransfered );
+	boost::async_coro_queue<
+		boost::circular_buffer_space_optimized<
+			boost::shared_ptr<boost::asio::streambuf>
+		>
+	> m_responses;
+
+	int process_post( std::size_t bytestransfered );
 };
 }

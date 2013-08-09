@@ -32,51 +32,23 @@
 
 namespace detail{
 
-avbot_rpc_server::http_request avbot_rpc_server::parse_http(std::size_t bytestransfered)
-{
-	std::string request_header;
-	request_header.resize(bytestransfered);
-	m_request->sgetn(&request_header[0], bytestransfered);
-
-	std::stringstream strstream(request_header);
-	std::string http_status_line;
-	std::getline(strstream, http_status_line);
-
-	std::stringstream strstream2(http_status_line);
-	// 解析 HTTP status line
-	std::string http_request_cmd, http_request_path;
-	strstream2 >> http_request_cmd >> http_request_path;
-
-	boost::to_upper(http_request_cmd);
-	// 检查是 GET 还是 PUSH
-	if ( http_request_cmd == "POST" ){
-
-		// 继续解析头部，最重要的是 content_length :)
-// 		// strstream
-		std::string headers = strstream.str();
-		std::string location;
-		avhttp::detail::parse_http_headers(headers.begin(), headers.end(), m_request_content_type, m_request_content_length, location);
-		return HTTP_POST;
-	}else{
-		return HTTP_GET;
-	}
-}
-
 /**
  * avbot rpc 接受的 JSON 格式为
  *
  * 	{
 		"protocol":"rpc",
 		"channel":"",  // 留空表示所有频道广播
-		"message":"text message"
+		"message":{
+			"text" : "text message"
+		}
 	}
  */
-void avbot_rpc_server::process_post( std::size_t bytestransfered )
+int avbot_rpc_server::process_post( std::size_t bytes_transfered )
 {
 	pt::ptree msg;
 	std::string messagebody;
-	messagebody.resize( bytestransfered );
-	m_request->sgetn( &messagebody[0], bytestransfered );
+	messagebody.resize( bytes_transfered );
+	m_streambuf->sgetn( &messagebody[0], bytes_transfered );
 	std::stringstream jsonpostdata( messagebody );
 
 	try
@@ -89,7 +61,7 @@ void avbot_rpc_server::process_post( std::size_t bytestransfered )
 		// 数据不是 json 格式，视作 纯 TEXT 格式.
 		msg.put( "protocol", "rpc" );
 		msg.put( "channel", "" );
-		msg.put( "message", messagebody );
+		msg.put( "message.text", messagebody );
 	}
 	catch( const pt::ptree_error &err )
 	{
@@ -98,116 +70,125 @@ void avbot_rpc_server::process_post( std::size_t bytestransfered )
 
 	try
 	{
-		on_message( msg );
+		broadcast_message( msg );
 	}
 	catch( const pt::ptree_error &err )
 	{
 		// 忽略.
+		return avhttpd::errc::internal_server_error;
 	}
 
+	return 200;
 }
 
-struct readbody_completion_condition{
+void avbot_rpc_server::get_response_sended(boost::shared_ptr< boost::asio::streambuf > v,
+	boost::system::error_code ec, std::size_t bytes_transfered)
+{
+	m_socket->get_io_service().post(
+		boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), ec, bytes_transfered)
+	);
+}
 
-	boost::shared_ptr<boost::asio::streambuf> _buf;
-	std::size_t _s;
+// 发送数据在这里
+void avbot_rpc_server::on_pop(boost::shared_ptr< boost::asio::streambuf > v)
+{
+	avhttpd::response_opts opts;
+	opts.insert(avhttpd::http_options::content_type, "application/json; charset=utf8");
+	opts.insert(avhttpd::http_options::content_length, boost::lexical_cast<std::string>(v->size()));
+	opts.insert("Cache-Control", "no-cache");
+	opts.insert(avhttpd::http_options::connection, "keep-alive");
+	opts.insert(avhttpd::http_options::http_version, m_request.find(avhttpd::http_options::http_version));
 
-	readbody_completion_condition(boost::shared_ptr<boost::asio::streambuf> buf, std::size_t s)
-	  : _buf(buf), _s(s){}
-
-	std::size_t operator()(const boost::system::error_code &, std::size_t)
-	{
-		return _s -  _buf->size();
-	}
-};
+	avhttpd::async_write_response(
+		*m_socket, 200, opts, *v,
+		boost::bind<void>(&avbot_rpc_server::get_response_sended, shared_from_this(), v,  _1, _2)
+	);
+}
 
 // 数据操作跑这里，嘻嘻.
-void avbot_rpc_server::operator()( boost::asio::coroutine coro, boost::system::error_code ec, std::size_t bytestransfered )
+void avbot_rpc_server::client_loop(boost::system::error_code ec, std::size_t bytestransfered)
 {
-	boost::shared_ptr<boost::asio::streambuf> sendbuf;
-
-	if( ec )
-	{
-		m_socket->close( ec );
-
-		// 看来不是 HTTP 客户端，诶，滚蛋啊！
-		// 沉默，直接关闭链接. 取消信号注册.
-		if( m_connect && m_connect->connected() )
-			m_connect->disconnect();
-
-		return;
-	}
-
-	http_request req ;
-
 	//for (;;)
-	reenter ( &coro )
-	{
-		// 发起 HTTP 处理操作.
-		yield boost::asio::async_read_until( *m_socket, *m_request, "\r\n\r\n", boost::bind( *this, coro, _1, _2 ) );
+	reenter(this)
+	{for (;;){
 
-		// 解析 HTTP
-		req = parse_http( bytestransfered );
+		m_request.clear();
+		m_streambuf = boost::make_shared<boost::asio::streambuf>();
 
-		if( req == HTTP_GET )
+		// 读取用户请求.
+		yield avhttpd::async_read_request(
+				*m_socket, *m_streambuf, m_request,
+				boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), _1, 0)
+		);
+
+		if(ec)
 		{
-
-			// 等待消息.
-			if( m_responses->empty() )
+			if (ec == avhttpd::errc::post_without_content)
 			{
-				if( !m_connect )
-				{
-					// 将自己注册到 avbot 的 signal 去
-					// 等 有消息的时候，on_message 被调用，也就是下面的 operator() 被调用.
-					yield m_connect = boost::make_shared<boost::signals2::connection>
-										( on_message.connect( boost::bind( *this, coro, _1 ) ) );
-					// 就这么退出了，但是消息来的时候，om_message 被调用，然后下面的那个
-					// operator() 就被调用了，那个 operator() 接着就会重新回调本 operator()
-					// 结果就是随着 coroutine 的作用，代码进入这一行，然后退出  if 判定
-					// 然后进入发送过程.
-				}
-				else
-				{
-					// 如果已经注册，直接返回。时候如果消息来了，on_message 被调用，也就
-					// 是下面的 operator() 被调用. 结果就是随着 coroutine 的作用，代码
-					// 进入上面那行，然后退出  if 判定。然后进入发送过程.
-					return;
-				}
-
-				// signals2 回调的时候会进入到这一行.
-			}
-
-			// 进入发送过程
-			sendbuf = m_responses->front();
-			yield boost::asio::async_write( *m_socket, *sendbuf, boost::bind( *this, coro, _1, _2 ) );
-			m_responses->pop_front();
-		}
-		else if( req == HTTP_POST )
-		{
-			// 这里进入 POST 处理.
-			// 解析 body, 不过其实最重要的是 content_length
-			// 有了 content_length 才能知道消息有多长啊!
-			if (m_request_content_length ==  0)
-			{
-				// 没有 content_length 的 POST! 不支持！ 哼
-				using namespace boost::system::errc;
-				yield avloop_idle_post(m_socket->get_io_service(), boost::bind( *this, coro, make_error_code(protocol_error), 0 ));
-				m_connect->disconnect();
+				yield avhttpd::async_write_response(*m_socket, avhttpd::errc::no_content,
+					boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), _1, 0)
+				);
 				return;
 			}
-			// 读取 body
-
-			boost::asio::async_read(*m_socket, *m_request,
-				readbody_completion_condition(m_request, m_request_content_length),
-				boost::bind( *this, coro,  boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred)
-			);
-			// body 必须是合法有效的 JSON 格式
-			process_post(bytestransfered);
+			else if (ec == avhttpd::errc::header_missing_host)
+			{
+				yield avhttpd::async_write_response(*m_socket, avhttpd::errc::bad_request,
+					boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), _1, 0)
+				);
+				return;
+			}
+			return;
 		}
 
-		// 这个步骤重新创建了一个新的 coro 对象，导致 reenter 会重新执行.
-		yield avloop_idle_post(m_socket->get_io_service(), boost::bind( *this, boost::asio::coroutine(), boost::system::error_code(), 0 ));
-	}
+		// 解析 HTTP
+		if(m_request.find(avhttpd::http_options::request_method) == "GET" )
+		{
+			// 等待消息, 并发送.
+			yield m_responses.async_pop(boost::bind(&avbot_rpc_server::on_pop, shared_from_this(), _1));
+		}
+		else if( m_request.find(avhttpd::http_options::request_method) == "POST")
+		{
+			// 这里进入 POST 处理.
+			// 读取 body
+			yield boost::asio::async_read(
+				*m_socket, *m_streambuf,
+				boost::asio::transfer_exactly(
+					boost::lexical_cast<std::size_t>(m_request.find(avhttpd::http_options::content_length))
+						- m_streambuf->size()
+				),
+
+				boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), _1, _2 )
+			);
+			// body 必须是合法有效的 JSON 格式
+			yield avhttpd::async_write_response(*m_socket, process_post(m_streambuf->size()),
+					avhttpd::response_opts()
+						(avhttpd::http_options::content_length, "4")
+						(avhttpd::http_options::content_type, "text/plain")
+						("Cache-Control", "no-cache")
+						(avhttpd::http_options::http_version, m_request.find(avhttpd::http_options::http_version)),
+					boost::asio::buffer("done"),
+					boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), _1, 0)
+			);
+			if ( m_request.find(avhttpd::http_options::connection) != "keep-alive" )
+				return;
+		}
+
+		// 继续
+		yield avloop_idle_post(m_socket->get_io_service(),
+			boost::bind(&avbot_rpc_server::client_loop, shared_from_this(), ec, 0)
+		);
+	}}
+}
+
+void avbot_rpc_server::callback_message(const boost::property_tree::ptree& jsonmessage)
+{
+	boost::shared_ptr<boost::asio::streambuf> buf(new boost::asio::streambuf);
+	std::ostream	stream(buf.get());
+	std::stringstream	teststream;
+
+	js::write_json(stream, jsonmessage);
+
+	m_responses.push(buf);
 }
 
 }

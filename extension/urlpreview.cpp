@@ -83,7 +83,10 @@ struct urlpreview
 	{
 		// 开启 avhttp 下载页面
 		m_httpstream->check_certificate( false );
-		m_httpstream->async_open( url, *this );
+		try{
+			// 防止 非法 url 导致错误
+			m_httpstream->async_open( url, *this );
+		}catch (...){}
 	}
 
 	// 打开在这里
@@ -213,7 +216,7 @@ void urlpreview::operator()( boost::property_tree::ptree message )
 	// 统一为
 	// http[s]?://[^ ].*
 	// 使用 boost_regex_search
-	boost::regex ex( "https?://[^ 】]*" );
+	boost::regex ex( "https?://([0-9\\.a-zA-Z]+)(:[\\d]+)?(/[a-zA-Z\\d\\$\\-_\\.\\+!\\*',%&,\\?\\.=]*)?" );
 	boost::cmatch what;
 	
 	while(boost::regex_search( txt.c_str(), what, ex ))
@@ -229,33 +232,39 @@ bool urlpreview::can_preview(std::string speaker, std::string urlstr)
 {
 	boost::regex ex;
 	// 内置数据库, 然后是 ${qqlog}/blockurls.txt
-	
-	avhttp::url url(urlstr);
-
-	if(url.host() == "web.qq.com" || url.host() =="web2.qq.com")
-	{
-		return false;
-	}
-	
-	// 遍历 blockurls.txt, 每个都是正则表达式!
 	try{
+	
+		avhttp::url url(urlstr);
 
-		std::ifstream blockurls("blockurls");
-		while(blockurls.is_open() && !blockurls.eof())
+
+		if(url.host() == "web.qq.com" || url.host() =="web2.qq.com")
 		{
-			std::string urlregex;
-			std::getline(blockurls, urlregex);
-			if(urlregex.empty())
-				break;
-			try{
-				ex.set_expression(urlregex);
-				if(boost::regex_match(urlstr.c_str(), ex))
-					return false;
-			}catch(const boost::regex_error&){}
+			return false;
 		}
 
-	}catch(const std::runtime_error&)
+		// 遍历 blockurls.txt, 每个都是正则表达式!
+		try{
+
+			std::ifstream blockurls("blockurls");
+			while(blockurls.is_open() && !blockurls.eof())
+			{
+				std::string urlregex;
+				std::getline(blockurls, urlregex);
+				if(urlregex.empty())
+					break;
+				try{
+					ex.set_expression(urlregex);
+					if(boost::regex_match(urlstr.c_str(), ex))
+						return false;
+				}catch(const boost::regex_error&){}
+			}
+
+		}catch(const std::runtime_error&)
+		{
+		}
+	}catch (...)
 	{
+		return false;
 	}
 	return true;
 }

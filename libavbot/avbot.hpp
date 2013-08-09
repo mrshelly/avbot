@@ -7,8 +7,8 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include "libwebqq/webqq.hpp"
-#include "libirc/irc.h"
-#include "libxmpp/xmpp.h"
+#include "libirc/irc.hpp"
+#include "libxmpp/xmpp.hpp"
 #include "libmailexchange/mx.hpp"
 
 class avbot : boost::noncopyable{
@@ -30,7 +30,7 @@ public:
 
 public:
 	// 这里是一些公开的成员变量.
-	typedef boost::function<void (const boost::asio::const_buffer &) > need_verify_image;
+	typedef boost::function<void (std::string) > need_verify_image;
 	typedef boost::property_tree::ptree av_message_tree;
 
 	// 每当有消息的时候激发.

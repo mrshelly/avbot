@@ -57,11 +57,11 @@ enum errc_t
 
 	login_failed_other,
 
+	login_failed_blocked_account = 19,
 
 
 
-
-	login_check_need_vc,
+	login_check_need_vc = 1000,
 
 	fetch_verifycode_failed,
 
@@ -80,6 +80,10 @@ enum errc_t
 	poll_failed_network_error, // 这个错误只需重试就可以了.
 
 	poll_failed_need_login, // 对于这个错误,  重新登录就可以了.
+
+	poll_failed_user_quit, // 对于这个错误,  重新登录就可以了.
+
+	poll_failed_unknow_ret_code, // 对于这个错误, 忽略？
 
 	send_message_failed_not_login, // 未登录
 
