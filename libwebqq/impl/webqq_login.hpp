@@ -143,6 +143,8 @@ public:
 		{
 			if( ( check_login( ec, bytes_transfered ) == 0 ) && ( m_webqq->m_status == LWQQ_STATUS_ONLINE ) )
 			{
+				BOOST_LOG_TRIVIAL(info) <<  "redirecting to " << m_next_url;
+
 				// 再次　login
 				m_stream = boost::make_shared<avhttp::http_stream>(boost::ref(m_webqq->get_ioservice()));
 				m_stream->request_options(
@@ -177,9 +179,13 @@ public:
 					m_webqq->m_cookie_mgr.save_cookie(*m_stream);
 				}
 
+				BOOST_LOG_TRIVIAL(info) <<  "redirecting success!!";
+
 				m_webqq->m_clientid = generate_clientid();
 				//change status,  this is the last step for login
 				// 设定在线状态.
+
+				BOOST_LOG_TRIVIAL(info) <<  "changing status...";
 
 				BOOST_ASIO_CORO_YIELD
 					m_webqq->change_status(LWQQ_STATUS_ONLINE, boost::bind<void>(*this, _1, 0));
@@ -190,6 +196,8 @@ public:
 					m_webqq->get_ioservice().post(boost::asio::detail::bind_handler(m_handler, ec));
 					return;
 				}
+
+				BOOST_LOG_TRIVIAL(info) <<  "status => online";
 
 				i = 0;
 
