@@ -119,6 +119,9 @@ public:
 			}else if (retcode == 110)
 			{
 				ec = error::make_error_code(error::poll_failed_user_quit);
+			}else if (retcode == 100006)
+			{
+				ec = error::make_error_code(error::poll_failed_need_refresh);
 			}else if (retcode){
 				ec = error::make_error_code(error::poll_failed_unknow_ret_code);
 			}else
@@ -236,13 +239,19 @@ private:
 	boost::property_tree::wptree::iterator m_iterator, m_iterator_end;
 };
 
-}
-
 template<class Handler>
-detail::poll_message_op<Handler> poll_message(boost::shared_ptr<WebQQ> webqq, Handler handler)
+detail::poll_message_op<Handler> make_poll_message_op(boost::shared_ptr<WebQQ> webqq, Handler handler)
 {
 	return detail::poll_message_op<Handler>(webqq, handler);
 }
 
+} // namespace detail
+
+template<class Handler>
+void async_poll_message(boost::shared_ptr<WebQQ> webqq, Handler handler)
+{
+	detail::make_poll_message_op(webqq, handler);
 }
+
+} // namespace qqimpl
 } // namespace webqq
