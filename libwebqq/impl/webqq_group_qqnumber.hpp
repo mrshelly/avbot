@@ -52,7 +52,7 @@ namespace webqq{
 namespace qqimpl{
 namespace detail{
 
-
+template<class Handler>
 class update_group_qqnumber_op : boost::asio::coroutine
 {
 	void do_fetch()
@@ -78,14 +78,12 @@ class update_group_qqnumber_op : boost::asio::coroutine
 		avhttp::async_read_body( *m_stream, url, *m_buffer, *this);
 	}
 
-	static void make_update_group_qqnumber_op(boost::shared_ptr<WebQQ> webqq, boost::shared_ptr<qqGroup> group, webqq::webqq_handler_t handler)
-	{
-		update_group_qqnumber_op op(webqq, group, handler);
-	}
-
 public:
-	update_group_qqnumber_op(boost::shared_ptr<WebQQ> webqq, boost::shared_ptr<qqGroup> group, webqq::webqq_handler_t handler)
-		: m_webqq(webqq), m_this_group(group), m_handler(handler)
+	update_group_qqnumber_op(boost::shared_ptr<WebQQ> webqq,
+		boost::shared_ptr<qqGroup> group, Handler handler)
+		: m_webqq(webqq)
+		, m_this_group(group)
+		, m_handler(handler)
 	{
 		do_fetch();
 	}
@@ -107,11 +105,8 @@ public:
 			//TODO, group members
 			if( jsonobj.get<int>( "retcode" ) == 0 ) {
 				m_this_group->qqnum = jsonobj.get<std::string>( "result.account" );
-				BOOST_LOG_TRIVIAL(debug) <<  "qq number of group " <<  console_out_str(m_this_group->name) << " is " <<  m_this_group->qqnum;
-				// 写缓存
-				pt::json_parser::write_json(std::string("cache/group_qqnumber") + m_this_group->gid, jsonobj);
-				//start polling messages, 2 connections!
-				BOOST_LOG_TRIVIAL(info) << "start polling messages";
+				BOOST_LOG_TRIVIAL(debug) <<  "qq number of group "
+					<<  console_out_str(m_this_group->name) << " is " <<  m_this_group->qqnum;
 
 				m_webqq->siggroupnumber(m_this_group);
 
@@ -125,38 +120,34 @@ public:
 		} catch( const pt::ptree_error & jserr ) {
 		}
 
-		try{
-		// 读取缓存
-			pt::json_parser::read_json(std::string("cache/group_qqnumber") + m_this_group->gid, jsonobj);
-
-			m_this_group->qqnum = jsonobj.get<std::string>( "result.account" );
-			BOOST_LOG_TRIVIAL(debug) <<  "(cached) qq number of group" <<  console_out_str(m_this_group->name) << "is" <<  m_this_group->qqnum << std::endl;
-
-			// 向用户报告一个 group 出来了.
-			m_webqq->siggroupnumber(m_this_group);
-			m_handler(boost::system::error_code());
-			return;
-		}catch (const pt::ptree_error & jserr){
-			boost::delayedcallsec( m_webqq->get_ioservice() , 500 + boost::rand48()() % 100 ,
-				boost::bind( &make_update_group_qqnumber_op, m_webqq, m_this_group, m_handler)
-			);
-		}
-	}
-
-	void operator()(boost::system::error_code ec)
-	{
-
+		// 返回错误
+		m_handler(error::make_error_code(error::failed_to_fetch_group_qqnumber));
 	}
 
 private:
 	boost::shared_ptr<qqimpl::WebQQ> m_webqq;
 	boost::shared_ptr<qqGroup> m_this_group;
-	webqq::webqq_handler_t m_handler;
+	Handler m_handler;
 
 	read_streamptr m_stream;
 	boost::shared_ptr<boost::asio::streambuf> m_buffer;
 };
 
+template<class Handler>
+update_group_qqnumber_op<Handler>
+make_update_group_qqnumber_op(boost::shared_ptr<WebQQ> webqq, boost::shared_ptr<qqGroup> group, Handler handler)
+{
+	return update_group_qqnumber_op<Handler>(webqq, group, handler);
 }
+
+} // namespace detail
+
+
+template<class Handler>
+void async_update_group_qqnumber(boost::shared_ptr<WebQQ> webqq, boost::shared_ptr<qqGroup> group, Handler handler)
+{
+	detail::make_update_group_qqnumber_op(webqq, group, handler);
 }
-}
+
+} // namespace qqimpl
+} // namespace webqq

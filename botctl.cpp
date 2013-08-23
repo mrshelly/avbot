@@ -42,13 +42,8 @@
 #include "auto_welcome.hpp"
 #include "botctl.hpp"
 
-#ifndef QQBOT_VERSION
-#ifdef PACKAGE_VERSION
-#   define QQBOT_VERSION PACKAGE_VERSION
-#   else
-#	define QQBOT_VERSION "unknow"
-#   endif
-#endif
+extern "C" const char * avbot_version();
+extern "C" const char * avbot_version_build_time();
 
 extern avlog logfile;			// 用于记录日志文件.
 
@@ -57,7 +52,7 @@ static void iopost_msg(boost::asio::io_service & io_service,
 	std::string msg, std::string groupid)
 {
 	io_service.post(boost::bind(msg_sender, msg));
-	logfile.add_log(groupid, msg);
+	logfile.add_log(groupid, msg, 0);
 }
 
 static void write_vcode(const std::string & vc_img_data)
@@ -261,7 +256,7 @@ void on_bot_command(avbot::av_message_tree jsonmessage, avbot & mybot)
 	if (message == ".qqbot version")
 	{
 		sendmsg(boost::str(boost::format("我的版本是 %s (%s %s)")
-			% QQBOT_VERSION % __DATE__ % __TIME__)
+			% avbot_version() % __DATE__ % __TIME__)
 		);
 		return;
 	}

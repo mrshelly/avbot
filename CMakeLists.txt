@@ -8,9 +8,9 @@ SET(CPACK_PACKAGE_DESCRIPTION_SUMMARY "avbot Q群云秘书")
 SET(CPACK_PACKAGE_VENDOR "avplayer.org")
 SET(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 SET(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/COPYING")
-SET(CPACK_PACKAGE_VERSION_MAJOR "7")
-SET(CPACK_PACKAGE_VERSION_MINOR "99")
-SET(CPACK_PACKAGE_VERSION_PATCH "-beta")
+SET(CPACK_PACKAGE_VERSION_MAJOR "8")
+SET(CPACK_PACKAGE_VERSION_MINOR "0")
+SET(CPACK_PACKAGE_VERSION_PATCH "0")
 if(WIN32)
 	SET(CPACK_PACKAGE_INSTALL_DIRECTORY "avbot")
 else()
@@ -118,8 +118,6 @@ find_package(OpenSSL)
 
 add_definitions(-DAVHTTP_ENABLE_OPENSSL -DAVHTTP_DISABLE_MULTI_DOWNLOAD)
 
-add_definitions(-DQQBOT_VERSION=\"${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}\")
-
 configure_file(avbot.rc.in ${PROJECT_BINARY_DIR}/avbot.rc)
 
 add_subdirectory(sqlite)
@@ -173,7 +171,18 @@ add_subdirectory(libavbot)
 add_subdirectory(libavlog)
 add_subdirectory(extension)
 
-set(AVBOT_SOURCES avbot_rpc_server.cpp main.cpp botctl.cpp input.cpp avbot_log_search.cpp ${PROJECT_BINARY_DIR}/avbot.rc)
+configure_file(version.c.in version.c @ONLY)
+
+set(AVBOT_SOURCES
+	avbot_rpc_server.cpp
+	main.cpp
+	botctl.cpp
+	input.cpp
+	avbot_log_search.cpp
+	${PROJECT_BINARY_DIR}/version.c
+	${PROJECT_BINARY_DIR}/avbot.rc
+)
+
 if(NOT WIN32)
 list(APPEND AVBOT_SOURCES backtrace.cpp)
 endif()

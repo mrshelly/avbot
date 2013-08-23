@@ -75,15 +75,9 @@ namespace po = boost::program_options;
 #include "deCAPTCHA/jsdati_decoder.hpp"
 #include "deCAPTCHA/hydati_decoder.hpp"
 
-#ifndef QQBOT_VERSION
-#ifdef PACKAGE_VERSION
-#   define QQBOT_VERSION PACKAGE_VERSION
-#   else
-#	define QQBOT_VERSION "unknow"
-#   endif
-#endif
-
 extern "C" void avbot_setup_seghandler();
+extern "C" const char * avbot_version();
+extern "C" const char * avbot_version_build_time();
 
 char * execpath;
 avlog logfile;			// 用于记录日志文件.
@@ -265,24 +259,8 @@ static void avbot_log(avbot::av_message_tree message, avbot & mybot, soci::sessi
 		}
 		else
 		{
-			// 如果最好的办法就是遍历组里的所有QQ群，都记录一次.
-			avbot::av_chanel_map channelmap = mybot.get_channel_map(channel_name);
-
-			// 如果没有Q群，诶，只好，嘻嘻.
-			logfile.add_log(channel_name, linemessage);
-
-			BOOST_FOREACH(std::string roomname, channelmap)
+			long rowid = 0;
 			{
-				if (roomname.substr(0, 3) == "qq:")
-				{
-					// 避免重复记录.
-					if (roomname.substr(3) != channel_name)
-					{
-						logfile.add_log(roomname.substr(3), linemessage);
-					}
-				}
-			}
-
 			// log to database
 			db << "insert into avlog (date, protocol, channel, nick, message)"
 				" values (:date, :protocol, :channel, :nick, :message)"
@@ -291,6 +269,30 @@ static void avbot_log(avbot::av_message_tree message, avbot & mybot, soci::sessi
 				, soci::use(channel_name)
 				, soci::use(nick)
 				, soci::use(textonly);
+			}
+
+			if (db.get_backend_name() == "sqlite3")
+			rowid =  sqlite_api::sqlite3_last_insert_rowid(
+				dynamic_cast<soci::sqlite3_session_backend*>(db.get_backend())->conn_
+			);
+
+			// 如果最好的办法就是遍历组里的所有QQ群，都记录一次.
+			avbot::av_chanel_map channelmap = mybot.get_channel_map(channel_name);
+
+			// 如果没有Q群，诶，只好，嘻嘻.
+			logfile.add_log(channel_name, linemessage, rowid);
+
+			BOOST_FOREACH(std::string roomname, channelmap)
+			{
+				if (roomname.substr(0, 3) == "qq:")
+				{
+					// 避免重复记录.
+					if (roomname.substr(3) != channel_name)
+					{
+						logfile.add_log(roomname.substr(3), linemessage, rowid);
+					}
+				}
+			}
 		}
 	}
 	else
@@ -552,6 +554,12 @@ int main(int argc, char * argv[])
 		return 1;
 	}
 
+	if (vm.count("version"))
+	{
+		printf("qqbot version %s (%s %s) \n", avbot_version() , __DATE__, __TIME__);
+		exit(EXIT_SUCCESS);
+	}
+
 #ifdef WIN32
 	// 从 windows 控制台输入的能有啥好编码，转到utf8吧.
 	preamble_qq_fmt = ansi_utf8(preamble_qq_fmt);
@@ -593,12 +601,6 @@ int main(int argc, char * argv[])
 		daemon(0, 0);
 		io_service.notify_fork(boost::asio::io_service::fork_child);
 		init_native_syslog();
-	}
-
-	if (vm.count("version"))
-	{
-		printf("qqbot version %s (%s %s) \n", QQBOT_VERSION, __DATE__, __TIME__);
-		exit(EXIT_SUCCESS);
 	}
 
 	if (!logdir.empty())

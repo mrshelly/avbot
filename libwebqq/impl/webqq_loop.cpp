@@ -7,7 +7,7 @@
 #include "webqq_impl.hpp"
 #include "webqq_check_login.hpp"
 #include "webqq_login.hpp"
-
+#include "webqq_poll_message.hpp"
 #include "webqq_loop.hpp"
 
 namespace webqq {
@@ -21,7 +21,9 @@ class internal_loop_op : boost::asio::coroutine
 {
 public:
 	internal_loop_op(boost::asio::io_service & io_service, boost::shared_ptr<WebQQ> _webqq)
-	  : m_io_service(io_service), m_webqq(_webqq)
+		: m_io_service(io_service)
+		, m_webqq(_webqq)
+		, m_counted_network_error(0)
 	{
 		// 读取 一些 cookie
 		cookie::cookie webqqcookie =
@@ -55,10 +57,12 @@ public:
 		BOOST_ASIO_CORO_REENTER(this)
 		{
 		if (firs_start==0) {
-			BOOST_LOG_TRIVIAL(info) << "use cached cookie to avoid login...";
+			BOOST_LOG_TRIVIAL(info) << "libwebqq: use cached cookie to avoid login...";
 		}
 
 		for (;m_webqq->m_status!= LWQQ_STATUS_QUITTING;){
+
+			m_counted_network_error = 0;
 
 	  		// 首先进入 message 循环! 做到无登录享用!
 			while (m_webqq->m_status == LWQQ_STATUS_ONLINE)
@@ -66,9 +70,15 @@ public:
 				// TODO, 每 12个小时刷新群列表.
 
 				// 获取一次消息。
-				BOOST_ASIO_CORO_YIELD m_webqq->async_poll_message(
+				BOOST_ASIO_CORO_YIELD async_poll_message(m_webqq,
 					boost::bind<void>(*this, _1, std::string())
 				);
+
+				if (firs_start==0 && !ec)
+				{
+					BOOST_LOG_TRIVIAL(info)
+						<< "libwebqq: GOOD NEWS! The cached cookies accepted by TX!";
+				}
 
 				// 判断消息处理结果
 
@@ -82,15 +92,53 @@ public:
 						boost::asio::detail::bind_handler(*this, ec, str)
 					);
 
-					firs_start = 1;
-
-				}else if ( ec == error::poll_failed_network_error )
+					if (firs_start==0)
+					{
+						BOOST_LOG_TRIVIAL(info)
+							<< "libwebqq: failed with last cookies, doing full login";
+					}
+				}
+				else if ( ec == error::poll_failed_network_error )
 				{
+					// 网络错误计数 +1 遇到连续的多次错误就要重新登录.
+					m_counted_network_error ++;
+
+					if (m_counted_network_error >= 3)
+					{
+						m_webqq->m_status = LWQQ_STATUS_OFFLINE;
+
+						BOOST_LOG_TRIVIAL(info)
+							<< "libwebqq: too many network errors, try relogin later...";
+					}
 					// 等待等待就好了，等待 12s
 					BOOST_ASIO_CORO_YIELD boost::delayedcallsec(m_io_service, 12,
 						boost::asio::detail::bind_handler(*this, ec, str)
 					);
 				}
+				else if (ec == error::poll_failed_need_refresh)
+				{
+					// 重新刷新列表.
+
+					// 就目前来说, 重新登录是最快的实现办法
+					// TODO 使用更好的办法.
+					m_webqq->m_status = LWQQ_STATUS_OFFLINE;
+
+					BOOST_LOG_TRIVIAL(info)
+						<< "libwebqq: group uin changed, try relogin...";
+
+					// 等待等待就好了，等待 15s
+					BOOST_ASIO_CORO_YIELD boost::delayedcallsec(m_io_service, 12,
+						boost::asio::detail::bind_handler(*this, ec, str)
+					);
+				}
+
+				if (!ec)
+				{
+					// 没出错的话, 把数字减1, 恩.
+					if (m_counted_network_error>0)
+						m_counted_network_error --;
+				}
+				firs_start = 1;
 			}
 
 			do {
@@ -167,6 +215,8 @@ private:
 	boost::asio::io_service & m_io_service;
 	boost::shared_ptr<WebQQ> m_webqq;
 	int firs_start;
+
+	int m_counted_network_error;
 };
 
 
