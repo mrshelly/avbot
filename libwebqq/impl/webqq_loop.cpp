@@ -9,6 +9,7 @@
 #include "webqq_login.hpp"
 #include "webqq_poll_message.hpp"
 #include "webqq_loop.hpp"
+#include "webqq_group_member.hpp"
 
 namespace webqq {
 namespace qqimpl {
@@ -17,10 +18,10 @@ namespace detail {
 /*
  * 这是 webqq 的一个内部循环，也是最重要的一个循环
  */
-class internal_loop_op : boost::asio::coroutine
+class webqq_main_loop_op : boost::asio::coroutine
 {
 public:
-	internal_loop_op(boost::asio::io_service & io_service, boost::shared_ptr<WebQQ> _webqq)
+	webqq_main_loop_op(boost::asio::io_service & io_service, boost::shared_ptr<WebQQ> _webqq)
 		: m_io_service(io_service)
 		, m_webqq(_webqq)
 		, m_counted_network_error(0)
@@ -36,7 +37,6 @@ public:
 
 		firs_start = m_webqq->m_clientid.empty();
 
-		// TODO load 缓存的群组信息.
 		m_webqq->m_status = firs_start==0? LWQQ_STATUS_ONLINE:LWQQ_STATUS_OFFLINE;
 
 		avloop_idle_post(
@@ -51,12 +51,13 @@ public:
 
 	void operator()(boost::system::error_code ec, std::string str)
 	{
-		if (ec == boost::asio::error::operation_aborted)
+		if (ec == boost::system::errc::operation_canceled)
 			return;
 
 		BOOST_ASIO_CORO_REENTER(this)
 		{
-		if (firs_start==0) {
+		if (firs_start==0)
+		{
 			BOOST_LOG_TRIVIAL(info) << "libwebqq: use cached cookie to avoid login...";
 		}
 
@@ -220,17 +221,140 @@ private:
 };
 
 
-internal_loop_op make_internal_loop_op(boost::asio::io_service& io_service, boost::shared_ptr<qqimpl::WebQQ> _webqq)
+webqq_main_loop_op make_webqq_main_loop_op(boost::asio::io_service& io_service, boost::shared_ptr<qqimpl::WebQQ> _webqq)
 {
-	return internal_loop_op(io_service, _webqq);
+	return webqq_main_loop_op(io_service, _webqq);
+}
+
+class group_refresh_loop_op : boost::asio::coroutine
+{
+public:
+	group_refresh_loop_op(boost::shared_ptr<WebQQ> _webqq)
+		:m_webqq(_webqq)
+	{
+		m_webqq->m_group_refresh_queue.async_pop(
+			boost::bind<void>(*this, _1, _2)
+		);
+
+		m_last_sync = boost::posix_time::from_time_t(0);
+	}
+
+	// pop call back
+	void operator()(boost::system::error_code ec, WebQQ::group_refresh_queue_type v)
+	{
+	 	if (ec == boost::system::errc::operation_canceled)
+			return;
+		std::string gid;
+		// 检查最后一次同步时间.
+		boost::posix_time::ptime curtime = boost::posix_time::from_time_t(std::time(NULL));
+
+		BOOST_ASIO_CORO_REENTER(this)
+		{for (;m_webqq->m_status!= LWQQ_STATUS_QUITTING;){
+
+			// good, 现在可以更新了.
+
+			// 先检查 type
+			gid = v.get<1>();
+
+
+			if (gid.empty()) // 更新全部.
+			{
+				// 需要最少休眠 30min 才能再次发起一次，否则会被 TX 拉黑
+				if (boost::posix_time::time_duration(curtime - m_last_sync).minutes() <= 30)
+				{
+					BOOST_ASIO_CORO_YIELD boost::delayedcallsec(
+						m_webqq->get_ioservice(),
+						1800 - boost::posix_time::time_duration(curtime - m_last_sync).seconds(),
+						boost::asio::detail::bind_handler(*this, ec, v)
+					);
+				}
+
+				BOOST_ASIO_CORO_YIELD update_group_list(
+					m_webqq,
+					boost::bind<void>(*this, _1, v)
+				);
+
+				if (ec)
+				{
+					// 重来！，how？ 当然是 push 咯！
+					m_webqq->m_group_refresh_queue.push(v);
+				}
+				else
+				{
+// 					// 检查是否刷新了群 GID, 如果是，就要刷新群列表！
+// 					if ( ! m_webqq->m_groups.empty() &&
+// 						! m_webqq->m_groups.begin()->second->memberlist.empty())
+// 					{
+// 						// 刷新群列表！
+// 						// 接着是刷新群成员列表.
+// 						for (iter = m_webqq->m_groups.begin(); iter != m_webqq->m_groups.end(); ++iter)
+// 						{
+// 							BOOST_ASIO_CORO_YIELD
+// 								m_webqq->update_group_member(iter->second , boost::bind<void>(*this, _1, v));
+//
+// 							using namespace boost::asio::detail;
+// 							BOOST_ASIO_CORO_YIELD
+// 								boost::delayedcallms(m_webqq->get_ioservice(), 530, bind_handler(*this, ec, v));
+// 						}
+// 					}
+				}
+			}
+			else
+			{
+				// 更新特定的 group 即可！
+				BOOST_ASIO_CORO_YIELD qqimpl::update_group_member(
+					m_webqq,
+					m_webqq->m_buddy_mgr.get_group_by_gid(gid),
+					boost::bind<void>(*this, _1, v)
+				);
+
+				if (ec){
+					// 应该是群GID都变了，重新刷新
+					m_webqq->m_group_refresh_queue.push(
+						boost::make_tuple(
+							webqq::webqq_handler_t(),
+							std::string()
+						)
+					);
+				}
+
+			}
+
+			// 更新完毕
+			if (v.get<0>())
+			{
+				v.get<0>()(ec);
+			}
+
+			m_last_sync = boost::posix_time::from_time_t(std::time(NULL));
+
+			// 继续获取，嘻嘻.
+			BOOST_ASIO_CORO_YIELD m_webqq->m_group_refresh_queue.async_pop(
+				boost::bind<void>(*this, _1, _2)
+			);
+		}}
+	}
+
+private:
+	boost::posix_time::ptime m_last_sync;
+	boost::shared_ptr<WebQQ> m_webqq;
+
+	grouplist::iterator iter;
+};
+
+static group_refresh_loop_op make_group_refresh_loop_op(boost::shared_ptr<WebQQ> _webqq)
+{
+	return group_refresh_loop_op(_webqq);
 }
 
 } // namespace detail
 
-
-void start_internal_loop(boost::asio::io_service& io_service, boost::shared_ptr<qqimpl::WebQQ> _webqq)
+void webqq_loop_start(boost::asio::io_service& io_service, boost::shared_ptr<qqimpl::WebQQ> _webqq)
 {
-	detail::make_internal_loop_op(io_service, _webqq);
+	// 开启第一个 loop
+	detail::make_webqq_main_loop_op(io_service, _webqq);
+	// 开启第二个 loop
+	detail::make_group_refresh_loop_op(_webqq);
 }
 
 } // namespace qqimpl
