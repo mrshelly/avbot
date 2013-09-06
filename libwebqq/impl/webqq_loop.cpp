@@ -27,13 +27,13 @@ public:
 		, m_counted_network_error(0)
 	{
 		// 读取 一些 cookie
-		cookie::cookie webqqcookie =
+		avhttp::cookies webqqcookie =
 			m_webqq->m_cookie_mgr.get_cookie("http://psession.qq.com/"); //.get_value("ptwebqq");
 
 		// load 缓存的 一些信息
-		m_webqq->m_vfwebqq = webqqcookie.get_value("vfwebqq");
-		m_webqq->m_psessionid = webqqcookie.get_value("psessionid");
-		m_webqq->m_clientid = webqqcookie.get_value("clientid");
+		m_webqq->m_vfwebqq = webqqcookie["vfwebqq"];
+		m_webqq->m_psessionid = webqqcookie["psessionid"];
+		m_webqq->m_clientid = webqqcookie["clientid"];
 
 		firs_start = m_webqq->m_clientid.empty();
 
@@ -64,6 +64,10 @@ public:
 		for (;m_webqq->m_status!= LWQQ_STATUS_QUITTING;){
 
 			m_counted_network_error = 0;
+
+
+			BOOST_LOG_TRIVIAL(info)
+				<< "start polling messages!";
 
 	  		// 首先进入 message 循环! 做到无登录享用!
 			while (m_webqq->m_status == LWQQ_STATUS_ONLINE)
@@ -142,6 +146,9 @@ public:
 				firs_start = 1;
 			}
 
+			BOOST_LOG_TRIVIAL(info)
+				<< "stoped polling messages!";
+
 			do {
 				// try check_login
 				BOOST_ASIO_CORO_YIELD async_check_login(m_webqq, *this);
@@ -182,7 +189,11 @@ public:
 			{
 				if (ec == error::login_failed_wrong_vc)
 				{
-					m_webqq->m_sigbadvc();
+					if (m_webqq->m_sigbadvc)
+					{
+						BOOST_LOG_TRIVIAL(info) << "reporting bad vc" ;
+						m_webqq->m_sigbadvc();
+					}
 				}
 
 				// 查找问题， 报告问题啊！

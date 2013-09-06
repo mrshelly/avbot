@@ -55,6 +55,8 @@ set(ENABLE_LIBSTDCXX_STATIC ON)
 set(ENABLE_STATIC ON)
 endif()
 
+
+
 if(WIN32)
 add_definitions(-D_WIN32_WINNT=0x0501 -DWINVER=0x0501)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -g0")
@@ -64,6 +66,9 @@ include_directories( ${PROJECT_SOURCE_DIR}/openssl/include)
 link_directories(${PROJECT_SOURCE_DIR}/libsformingw32/mingw32)
 link_directories(${PROJECT_SOURCE_DIR}/libsformingw32/mingw64)
 endif()
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden")
 
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g0")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g0")
@@ -170,11 +175,12 @@ add_subdirectory(deCAPTCHA)
 add_subdirectory(libavbot)
 add_subdirectory(libavlog)
 add_subdirectory(extension)
+add_subdirectory(rpc)
 
 configure_file(version.c.in version.c @ONLY)
 
 set(AVBOT_SOURCES
-	avbot_rpc_server.cpp
+# 	avbot_rpc_server.cpp
 	main.cpp
 	botctl.cpp
 	input.cpp
@@ -208,7 +214,7 @@ if(APPLE AND WITH_ICONV)
 target_link_libraries(avbot -liconv)
 endif()
 
-target_link_libraries(avbot libavbot avlog extension)
+target_link_libraries(avbot libavbot avlog extension avbotrpc)
 
 target_link_libraries(avbot ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
@@ -222,4 +228,3 @@ check_library_exists(rt clock_gettime "" HAVE_CLOCK_GETTIME)
 if(HAVE_CLOCK_GETTIME)
         target_link_libraries(avbot -lrt)
 endif(HAVE_CLOCK_GETTIME)
-
