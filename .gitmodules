@@ -1,9 +1,6 @@
 [submodule "avhttp"]
 	path = avhttp
 	url = git://github.com/avplayer/avhttp.git
-[submodule "avproxy"]
-	path = avproxy
-	url = git://github.com/avplayer/avproxy.git
 [submodule "avboost"]
 	path = avboost
 	url = git://github.com/avplayer/avboost.git
@@ -17,3 +14,6 @@
 [submodule "avhttpd"]
 	path = avhttpd
 	url = git://github.com/avplayer/avhttpd.git
+[submodule "libwebqq"]
+	path = libwebqq
+	url = git://github.com/microcai/libwebqq.git
